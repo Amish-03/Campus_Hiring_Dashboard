@@ -1,25 +1,32 @@
-# Campus Hiring NLP Analytics System
+# Campus Hiring NLP Analytics System (v2)
 
-> LLM-powered semantic extraction from university placement emails with a Streamlit analytics dashboard.
+> Production-quality LLM-powered semantic extraction from university placement emails, with deduplication, validation audit trail, and an interactive Streamlit dashboard.
 
 ## Current State
 
-- **497 emails** already fetched from `placement_officer@kletech.ac.in` (since March 2025) and stored in `data/campus_hiring.db`
-- **203 emails** classified as hiring-related by the rule-based classifier
-- **LLM extraction has NOT been run yet** — this is the next step
+- **497 emails** fetched from `placement_officer@kletech.ac.in` and stored in `data/campus_hiring.db`
+- **~203 emails** classified as hiring-related
+- **LLM extraction not yet run** — this is the next step on the CUDA device
 
 ## Architecture
 
 ```
-Gmail API → SQLite (emails) → Rule Classifier → Mistral-7B LLM → Validator → SQLite (structured) → Streamlit
+Gmail API → SQLite (emails)
+         → Rule Classifier
+         → Mistral-7B LLM (4-bit, CUDA) → JSON retry (3 attempts)
+         → Validator (audit trail)
+         → SQLite (structured_hiring_data)
+         → Deduplicator (group by company+role)
+         → SQLite (drives)
+         → Streamlit Dashboard
 ```
 
-## Setup on CUDA Device (Step-by-Step)
+## Setup on CUDA Device
 
 ### Prerequisites
 - Python 3.10+
-- NVIDIA GPU with **≥8 GB VRAM** (12 GB confirmed available)
-- CUDA toolkit installed
+- NVIDIA GPU ≥ 8 GB VRAM (12 GB recommended)
+- CUDA toolkit
 
 ### Step 1: Clone & Install
 
@@ -29,23 +36,19 @@ cd Campus_Hiring_Dashboard
 pip install -r requirements.txt
 ```
 
-> **Note**: `bitsandbytes` requires a Linux environment for GPU support. If on Windows, use WSL2.
+### Step 2: Run Full Pipeline
 
-### Step 2: Run LLM Extraction
-
-The 497 emails are already in `data/campus_hiring.db`. **No Gmail credentials needed** — just run extraction:
+The 497 emails are already in the database. No Gmail credentials needed:
 
 ```bash
 python -m src.main --extract-only
 ```
 
-This will:
-1. Load **Mistral-7B-Instruct-v0.3** (4-bit quantized, ~4 GB VRAM)
-2. Classify all 497 emails → identify ~203 hiring emails
-3. Run LLM extraction on each hiring email → structured JSON
-4. Validate output (CTC cap at 100 LPA, CGPA 0–10, ISO dates)
-5. Store results in `structured_hiring_data` table
-6. Takes ~10 minutes on a mid-range GPU
+This runs **4 stages** automatically:
+1. **Classify** → identifies ~203 hiring emails
+2. **Extract** → Mistral-7B with 4-bit quantization, JSON retry, ~10 min
+3. **Validate** → CTC cap, CGPA range, date normalization, branch standardization
+4. **Deduplicate** → merges multiple emails per company into one drive record
 
 ### Step 3: Launch Dashboard
 
@@ -53,61 +56,70 @@ This will:
 streamlit run src/dashboard/dashboard.py
 ```
 
-Dashboard sections:
-- **Summary Metrics**: Total companies, Avg CTC, Highest CTC, Avg CGPA, Total offers
-- **Company Table**: Searchable/sortable with all extracted fields
-- **Charts**: Hiring by month, CTC distribution, CGPA distribution, Top 10 CTC, Role distribution
-
 ## CLI Reference
 
 | Command | What it does |
 |:---|:---|
-| `python -m src.main` | Full pipeline: fetch Gmail + classify + LLM extract |
-| `python -m src.main --extract-only` | **Use this** — LLM extract from existing DB (no fetch) |
-| `python -m src.main --extract-only --force` | Re-extract (clears previous LLM results) |
-| `python -m src.main --no-fetch` | Classify + extract without re-fetching Gmail |
-| `streamlit run src/dashboard/dashboard.py` | Launch analytics dashboard |
+| `python -m src.main` | Full pipeline (fetch + classify + extract + deduplicate) |
+| `python -m src.main --extract-only` | **Recommended** — extract from existing DB |
+| `python -m src.main --extract-only --force` | Re-extract (clears previous results) |
+| `python -m src.main --no-fetch` | Skip Gmail fetch |
+| `python -m src.main --sample-eval` | Generate ground truth template (20 emails) |
+| `python -m src.main --evaluate` | Run evaluation against annotated ground truth |
+| `streamlit run src/dashboard/dashboard.py` | Launch dashboard |
 
 ## Project Structure
 
 ```
-Campus_Hiring_Dashboard/
-├── data/campus_hiring.db              # 497 emails already fetched
+campus_hiring_nlp/
+├── data/
+│   └── campus_hiring.db              # 497 emails + 6 tables
 ├── src/
-│   ├── main.py                        # Pipeline orchestrator (CLI flags)
-│   ├── models.py                      # EmailRecord, StructuredHiringData
+│   ├── main.py                        # 6-stage pipeline orchestrator
+│   ├── models.py                      # 5 dataclasses (Email, Hiring, Drive, Audit)
 │   ├── ingestion/gmail_api.py         # Gmail API fetcher
 │   ├── classifier/rule_classifier.py  # Weighted keyword classifier
-│   ├── extraction/llm_extractor.py    # Mistral-7B structured JSON extractor
-│   ├── validation/validator.py        # Post-processing sanity checks
-│   ├── storage/db.py                  # SQLite manager (3 tables)
+│   ├── extraction/llm_extractor.py    # Mistral-7B + prompt + retry
+│   ├── validation/validator.py        # Sanity checks + audit logging
+│   ├── deduplication/deduplicator.py  # company+role grouping + merge
 │   ├── analytics/metrics.py           # Metrics computation
-│   └── dashboard/dashboard.py         # Streamlit app (5 charts)
+│   ├── dashboard/dashboard.py         # Streamlit (7 charts, CSV export)
+│   └── evaluation/evaluator.py        # Precision/recall framework
 ├── requirements.txt
-└── .gitignore                         # Excludes credentials.json, token.json
+└── .gitignore
 ```
+
+## Database Schema (6 Tables)
+
+| Table | Purpose |
+|:---|:---|
+| `emails` | Raw emails (497 rows) |
+| `hiring_details` | Legacy regex extraction |
+| `structured_hiring_data` | LLM extraction (per email, UNIQUE email_id) |
+| `drives` | Deduplicated drives (UNIQUE company_name+role) |
+| `drive_email_mapping` | N:N drive ↔ email relationship |
+| `data_audit` | Validation corrections log |
 
 ## LLM Details
 
-- **Model**: `mistralai/Mistral-7B-Instruct-v0.3`
-- **Quantization**: 4-bit NF4 via `bitsandbytes` (~4 GB VRAM)
-- **Decoding**: Deterministic (`temperature=0.1`, `do_sample=False`)
-- **Output**: Strict JSON with 10 fields (company, role, CTC, CGPA, branches, dates, selections)
-- **Resumable**: Skips already-extracted emails (UNIQUE constraint on email_id)
+- **Model**: `mistralai/Mistral-7B-Instruct-v0.3` (4-bit NF4)
+- **VRAM**: ~4 GB
+- **Retry**: 3 attempts with JSON hint on failure
+- **Prompt**: Placement-officer-aware (subject-line quotes, date-context alignment)
+- **Deterministic**: `temperature=0.1`, `do_sample=False`, `repetition_penalty=1.1`
 
-## Extracted JSON Schema
+## Dashboard Features
 
-```json
-{
-  "company_name": "NVIDIA",
-  "role": "ASIC Design Engineer",
-  "ctc_lpa": 17.0,
-  "cgpa_cutoff": 7.5,
-  "eligibility_branches": "CSE, ECE",
-  "registration_deadline": "2025-09-10",
-  "test_date": "2025-09-15",
-  "interview_date": null,
-  "selection_count": 4,
-  "total_openings": null
-}
-```
+| Section | Details |
+|:---|:---|
+| **Metrics** | Total drives, unique companies, avg/median/max CTC, avg CGPA, total offers |
+| **Drive Table** | One row per drive, searchable, sortable |
+| **Charts** | Hiring by month, CTC histogram, CGPA histogram, Top 10 CTC, Role pie, Branch bar, CGPA vs CTC scatter |
+| **Export** | CSV download button |
+| **Audit** | Expandable validation audit log |
+
+## Evaluation Framework
+
+1. `--sample-eval` → generates `ground_truth.json` with 20 random emails
+2. Manually annotate the `ground_truth` fields
+3. `--evaluate` → computes field-level precision, recall, hallucination rate
