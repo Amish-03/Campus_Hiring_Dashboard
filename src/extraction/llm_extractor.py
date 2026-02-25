@@ -27,14 +27,14 @@ MAX_RETRIES = 3
 # ── JSON Schema for validation ───────────────────────────────
 
 EXPECTED_KEYS = {
-    "company_name", "role", "ctc_lpa", "cgpa_cutoff",
+    "is_hiring_email", "company_name", "role", "ctc_lpa", "cgpa_cutoff",
     "eligibility_branches", "registration_deadline",
     "test_date", "interview_date", "selection_count", "total_openings"
 }
 
 # ── Prompt Template ──────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are a precise data extraction assistant for a university placement office.
+SYSTEM_PROMPT = """You are a precise classification and data extraction assistant for a university placement office.
 You MUST output ONLY valid JSON. No explanations. No markdown. No extra text.
 You MUST NOT guess, infer, or hallucinate any information.
 If a field is not explicitly mentioned in the email, you MUST set it to null."""
@@ -47,9 +47,16 @@ CONTEXT:
 - Multiple emails may refer to the same company drive.
 - Company names are often in the subject line inside quotes (e.g., "NVIDIA" or "Rossell Techsys").
 
-EXTRACTION RULES:
+CLASSIFICATION + EXTRACTION RULES:
 
-1. company_name (REQUIRED):
+0. is_hiring_email (REQUIRED — decide FIRST):
+   - Set to true if the email is about a campus hiring drive, placement opportunity,
+     job opening, internship opportunity, recruitment, or selection results.
+   - Set to false if the email is about general notices, circulars, academic matters,
+     event invitations, club activities, holidays, or anything unrelated to hiring.
+   - If is_hiring_email is false, set ALL other fields to null.
+
+1. company_name:
    - FIRST: Check the subject line for a name in quotes — prioritize this.
    - SECOND: Look for company name early in the email body.
    - If unclear or ambiguous, return null. NEVER guess.
@@ -93,7 +100,7 @@ EMAIL BODY:
 {body}
 
 Output ONLY this JSON (no other text):
-{{"company_name": str_or_null, "role": str_or_null, "ctc_lpa": float_or_null, "cgpa_cutoff": float_or_null, "eligibility_branches": str_or_null, "registration_deadline": "YYYY-MM-DD_or_null", "test_date": "YYYY-MM-DD_or_null", "interview_date": "YYYY-MM-DD_or_null", "selection_count": int_or_null, "total_openings": int_or_null}}
+{{"is_hiring_email": true_or_false, "company_name": str_or_null, "role": str_or_null, "ctc_lpa": float_or_null, "cgpa_cutoff": float_or_null, "eligibility_branches": str_or_null, "registration_deadline": "YYYY-MM-DD_or_null", "test_date": "YYYY-MM-DD_or_null", "interview_date": "YYYY-MM-DD_or_null", "selection_count": int_or_null, "total_openings": int_or_null}}
 [/INST]"""
 
 RETRY_HINT = "\n\n[INST] Your previous response was not valid JSON. Output ONLY a single valid JSON object with the schema shown above. No text before or after the JSON. [/INST]"
@@ -213,10 +220,13 @@ class LLMExtractor:
 
     def _validate_schema(self, parsed: Dict[str, Any]) -> bool:
         """Check that parsed JSON has the expected keys."""
-        return "company_name" in parsed
+        return "is_hiring_email" in parsed
 
     def extract(self, email_id: str, subject: str, body: str) -> Optional[StructuredHiringData]:
-        """Extract structured data from a single email with retry logic."""
+        """
+        Classify and extract structured data from a single email.
+        Returns None if LLM classifies it as non-hiring OR if JSON parse fails.
+        """
         if self.model is None:
             raise RuntimeError("Model not loaded. Call load_model() first.")
 
@@ -227,6 +237,12 @@ class LLMExtractor:
             parsed = self._parse_json(raw_output)
 
             if parsed and self._validate_schema(parsed):
+                # Check LLM classification
+                is_hiring = parsed.get("is_hiring_email")
+                if is_hiring is False or str(is_hiring).lower() == "false":
+                    self._stats["skipped_non_hiring"] = self._stats.get("skipped_non_hiring", 0) + 1
+                    return None  # LLM says not a hiring email
+
                 self._stats["success"] += 1
                 if attempt > 0:
                     self._stats["retries"] += attempt

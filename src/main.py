@@ -1,18 +1,20 @@
 """
 Campus Hiring NLP Pipeline — Main Orchestrator.
 
-Runs a 6-stage pipeline:
+Runs a 5-stage pipeline:
   1. Fetch emails from Gmail
-  2. Classify hiring vs non-hiring
-  3. LLM extraction (structured JSON)
-  4. Validation (sanity checks + audit)
-  5. Deduplication (merge into drives)
-  6. Summary report
+  2. LLM classification + extraction (structured JSON)
+  3. Validation (sanity checks + audit)
+  4. Deduplication (merge into drives)
+  5. Summary report
+
+The LLM itself decides if an email is hiring-related (no hard-coded classifier).
+ALL emails are sent through the LLM — it classifies and extracts in one pass.
 
 Usage:
     python -m src.main                       # Full pipeline
     python -m src.main --extract-only        # Re-extract + deduplicate (no fetch)
-    python -m src.main --no-fetch            # Classify + extract (no fetch)
+    python -m src.main --no-fetch            # Extract from existing DB (no fetch)
     python -m src.main --force               # Clear and re-extract
     python -m src.main --sample-eval         # Generate evaluation template
     python -m src.main --evaluate            # Run evaluation against ground truth
@@ -27,7 +29,6 @@ from tqdm import tqdm
 
 from .ingestion.gmail_api import GmailFetcher
 from .storage.db import DatabaseManager
-from .classifier.rule_classifier import HiringClassifier
 from .extraction.llm_extractor import LLMExtractor
 from .validation.validator import Validator
 from .deduplication.deduplicator import Deduplicator
@@ -67,33 +68,14 @@ def step1_fetch(db: DatabaseManager) -> int:
     return len(emails)
 
 
-def step2_classify(db: DatabaseManager) -> list:
-    """Step 2: Classify emails as hiring / non-hiring."""
+def step2_extract(db: DatabaseManager, force: bool = False) -> int:
+    """
+    Step 2: LLM classification + extraction.
+    Sends ALL emails to the LLM. The LLM decides if each is hiring-related.
+    Only hiring emails get saved to structured_hiring_data.
+    """
     print("\n" + "=" * 60)
-    print("  STEP 2: Classifying Emails")
-    print("=" * 60)
-
-    classifier = HiringClassifier()
-    all_emails = db.get_all_emails()
-    hiring = []
-    non_hiring = 0
-
-    for email in all_emails:
-        if classifier.is_hiring_email(email.sender, email.subject, email.body):
-            hiring.append(email)
-        else:
-            non_hiring += 1
-
-    print(f"  Total:       {len(all_emails)}")
-    print(f"  Hiring:      {len(hiring)}")
-    print(f"  Non-hiring:  {non_hiring}")
-    return hiring
-
-
-def step3_extract(db: DatabaseManager, hiring_emails: list, force: bool = False) -> int:
-    """Step 3: LLM-based structured extraction."""
-    print("\n" + "=" * 60)
-    print("  STEP 3: LLM Extraction (Mistral-7B-Instruct)")
+    print("  STEP 2: LLM Classification + Extraction (Mistral-7B)")
     print("=" * 60)
 
     if force:
@@ -102,32 +84,39 @@ def step3_extract(db: DatabaseManager, hiring_emails: list, force: bool = False)
         print("  Cleared previous extraction data.")
 
     already = db.get_extracted_email_ids()
-    pending = [e for e in hiring_emails if e.id not in already]
+    all_emails = db.get_all_emails()
+    pending = [e for e in all_emails if e.id not in already]
 
     if not pending:
-        print("  All emails already extracted. Use --force to re-extract.")
+        print("  All emails already processed. Use --force to re-extract.")
         return 0
 
-    print(f"  Pending:     {len(pending)}")
-    print(f"  Already done: {len(already)}")
+    print(f"  Total emails:    {len(all_emails)}")
+    print(f"  Already done:    {len(already)}")
+    print(f"  Pending:         {len(pending)}")
+    print(f"\n  The LLM will classify each email as hiring/non-hiring")
+    print(f"  and extract structured data from hiring emails.\n")
 
     extractor = LLMExtractor()
     extractor.load_model()
 
     validator = Validator(db=db)
 
-    success = 0
+    hiring_count = 0
+    non_hiring_count = 0
     failed = 0
 
-    for email in tqdm(pending, desc="  Extracting", unit="email"):
+    for email in tqdm(pending, desc="  Processing", unit="email"):
         try:
             result = extractor.extract(email.id, email.subject, email.body)
             if result:
+                # LLM classified as hiring — validate and save
                 result = validator.validate(result)
                 db.save_structured_data(result)
-                success += 1
+                hiring_count += 1
             else:
-                failed += 1
+                # LLM classified as non-hiring OR JSON parse failed
+                non_hiring_count += 1
         except Exception as e:
             safe_msg = str(e).encode('ascii', errors='replace').decode('ascii')
             tqdm.write(f"  [ERROR] {safe_msg[:80]}")
@@ -136,27 +125,29 @@ def step3_extract(db: DatabaseManager, hiring_emails: list, force: bool = False)
     extractor.unload_model()
 
     stats = extractor.stats
-    print(f"\n  Extraction complete.")
-    print(f"  Success:  {success}")
-    print(f"  Failed:   {failed}")
-    print(f"  Retries:  {stats.get('retries', 0)}")
-    return success
+    print(f"\n  Processing complete.")
+    print(f"  Hiring emails:     {hiring_count}")
+    print(f"  Non-hiring:        {non_hiring_count}")
+    print(f"  LLM-classified:    {stats.get('skipped_non_hiring', 0)} (non-hiring)")
+    print(f"  JSON failures:     {failed}")
+    print(f"  Retries used:      {stats.get('retries', 0)}")
+    return hiring_count
 
 
-def step4_deduplicate(db: DatabaseManager) -> int:
-    """Step 4: Deduplicate into drives."""
+def step3_deduplicate(db: DatabaseManager) -> int:
+    """Step 3: Deduplicate into drives."""
     print("\n" + "=" * 60)
-    print("  STEP 4: Deduplication")
+    print("  STEP 3: Deduplication")
     print("=" * 60)
 
     deduplicator = Deduplicator(db)
     return deduplicator.run()
 
 
-def step5_summary(db: DatabaseManager):
-    """Step 5: Quick analytics summary."""
+def step4_summary(db: DatabaseManager):
+    """Step 4: Quick analytics summary."""
     print("\n" + "=" * 60)
-    print("  STEP 5: Analytics Summary")
+    print("  STEP 4: Analytics Summary")
     print("=" * 60)
 
     import pandas as pd
@@ -171,6 +162,11 @@ def step5_summary(db: DatabaseManager):
     cgpa = df["cgpa_cutoff"].dropna()
     sel = df["selection_count"].dropna()
 
+    total_emails = db.get_email_count()
+    extracted = len(db.get_extracted_email_ids())
+
+    print(f"  Total emails:        {total_emails}")
+    print(f"  Hiring emails:       {extracted}")
     print(f"  Total drives:        {len(df)}")
     print(f"  Unique companies:    {df['company_name'].nunique()}")
     if not ctc.empty:
@@ -192,9 +188,9 @@ def step5_summary(db: DatabaseManager):
 def main():
     parser = argparse.ArgumentParser(description="Campus Hiring NLP Pipeline")
     parser.add_argument("--extract-only", action="store_true",
-                        help="Re-run LLM extraction + deduplication (no Gmail fetch)")
+                        help="LLM extraction + deduplication only (no Gmail fetch)")
     parser.add_argument("--no-fetch", action="store_true",
-                        help="Classify + extract from existing DB")
+                        help="Extract from existing DB (no Gmail fetch)")
     parser.add_argument("--force", action="store_true",
                         help="Clear previous extractions and re-do")
     parser.add_argument("--sample-eval", action="store_true",
@@ -228,17 +224,14 @@ def main():
     if not args.extract_only and not args.no_fetch:
         step1_fetch(db)
 
-    # Step 2: Classify
-    hiring_emails = step2_classify(db)
+    # Step 2: LLM classify + extract (ALL emails)
+    step2_extract(db, force=args.force)
 
-    # Step 3: Extract
-    step3_extract(db, hiring_emails, force=args.force)
+    # Step 3: Deduplicate
+    step3_deduplicate(db)
 
-    # Step 4: Deduplicate
-    step4_deduplicate(db)
-
-    # Step 5: Summary
-    step5_summary(db)
+    # Step 4: Summary
+    step4_summary(db)
 
 
 if __name__ == "__main__":

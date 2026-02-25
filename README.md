@@ -12,8 +12,7 @@
 
 ```
 Gmail API → SQLite (emails)
-         → Rule Classifier
-         → Mistral-7B LLM (4-bit, CUDA) → JSON retry (3 attempts)
+         → Mistral-7B LLM (4-bit, CUDA) → classify + extract → JSON retry (3 attempts)
          → Validator (audit trail)
          → SQLite (structured_hiring_data)
          → Deduplicator (group by company+role)
@@ -44,10 +43,9 @@ The 497 emails are already in the database. No Gmail credentials needed:
 python -m src.main --extract-only
 ```
 
-This runs **4 stages** automatically:
-1. **Classify** → identifies ~203 hiring emails
-2. **Extract** → Mistral-7B with 4-bit quantization, JSON retry, ~10 min
-3. **Validate** → CTC cap, CGPA range, date normalization, branch standardization
+This runs **3 stages** automatically:
+1. **LLM Classify + Extract** → ALL 497 emails sent to Mistral-7B, which decides hiring/non-hiring and extracts data in one pass (~15-20 min)
+2. **Validate** → CTC cap, CGPA range, date normalization, branch standardization
 4. **Deduplicate** → merges multiple emails per company into one drive record
 
 ### Step 3: Launch Dashboard
@@ -78,8 +76,7 @@ campus_hiring_nlp/
 │   ├── main.py                        # 6-stage pipeline orchestrator
 │   ├── models.py                      # 5 dataclasses (Email, Hiring, Drive, Audit)
 │   ├── ingestion/gmail_api.py         # Gmail API fetcher
-│   ├── classifier/rule_classifier.py  # Weighted keyword classifier
-│   ├── extraction/llm_extractor.py    # Mistral-7B + prompt + retry
+│   ├── extraction/llm_extractor.py    # Mistral-7B: classify + extract + retry
 │   ├── validation/validator.py        # Sanity checks + audit logging
 │   ├── deduplication/deduplicator.py  # company+role grouping + merge
 │   ├── analytics/metrics.py           # Metrics computation
@@ -104,6 +101,7 @@ campus_hiring_nlp/
 
 - **Model**: `mistralai/Mistral-7B-Instruct-v0.3` (4-bit NF4)
 - **VRAM**: ~4 GB
+- **Classification**: LLM decides `is_hiring_email` (true/false) — no hard-coded rules
 - **Retry**: 3 attempts with JSON hint on failure
 - **Prompt**: Placement-officer-aware (subject-line quotes, date-context alignment)
 - **Deterministic**: `temperature=0.1`, `do_sample=False`, `repetition_penalty=1.1`
