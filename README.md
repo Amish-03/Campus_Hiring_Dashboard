@@ -5,8 +5,8 @@
 ## Current State
 
 - **497 emails** fetched from `placement_officer@kletech.ac.in` and stored in `data/campus_hiring.db`
-- **~203 emails** classified as hiring-related
 - **LLM extraction not yet run** — this is the next step on the CUDA device
+- The LLM itself classifies each email as hiring/non-hiring (no hard-coded rules)
 
 ## Architecture
 
@@ -46,7 +46,7 @@ python -m src.main --extract-only
 This runs **3 stages** automatically:
 1. **LLM Classify + Extract** → ALL 497 emails sent to Mistral-7B, which decides hiring/non-hiring and extracts data in one pass (~15-20 min)
 2. **Validate** → CTC cap, CGPA range, date normalization, branch standardization
-4. **Deduplicate** → merges multiple emails per company into one drive record
+3. **Deduplicate** → merges multiple emails per company into one drive record
 
 ### Step 3: Launch Dashboard
 
@@ -58,7 +58,7 @@ streamlit run src/dashboard/dashboard.py
 
 | Command | What it does |
 |:---|:---|
-| `python -m src.main` | Full pipeline (fetch + classify + extract + deduplicate) |
+| `python -m src.main` | Full pipeline (fetch + LLM classify/extract + deduplicate) |
 | `python -m src.main --extract-only` | **Recommended** — extract from existing DB |
 | `python -m src.main --extract-only --force` | Re-extract (clears previous results) |
 | `python -m src.main --no-fetch` | Skip Gmail fetch |
@@ -73,7 +73,7 @@ campus_hiring_nlp/
 ├── data/
 │   └── campus_hiring.db              # 497 emails + 6 tables
 ├── src/
-│   ├── main.py                        # 6-stage pipeline orchestrator
+│   ├── main.py                        # 4-stage pipeline orchestrator
 │   ├── models.py                      # 5 dataclasses (Email, Hiring, Drive, Audit)
 │   ├── ingestion/gmail_api.py         # Gmail API fetcher
 │   ├── extraction/llm_extractor.py    # Mistral-7B: classify + extract + retry
