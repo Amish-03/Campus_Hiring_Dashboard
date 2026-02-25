@@ -104,5 +104,5 @@ class Deduplicator:
 
             drive_count += 1
 
-        print(f"  Deduplicated {len(all_data)} email extractions → {drive_count} unique drives")
+        print(f"  Deduplicated {len(all_data)} email extractions -> {drive_count} unique drives")
         return drive_count

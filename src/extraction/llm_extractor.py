@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # ── Model Configuration ──────────────────────────────────────
 
 MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.3"
-MAX_NEW_TOKENS = 384
+MAX_NEW_TOKENS = 256
 MAX_RETRIES = 3
 
 # ── JSON Schema for validation ───────────────────────────────
@@ -151,7 +151,7 @@ class LLMExtractor:
 
     def _build_prompt(self, subject: str, body: str) -> str:
         """Build the extraction prompt."""
-        truncated_body = body[:2500] if body else "(empty email body)"
+        truncated_body = body[:1500] if body else "(empty email body)"
         return EXTRACTION_PROMPT.format(
             system=SYSTEM_PROMPT,
             subject=subject,
@@ -160,9 +160,9 @@ class LLMExtractor:
 
     def _generate(self, prompt: str) -> str:
         """Run inference and return raw text output."""
-        inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=4096).to(self.model.device)
+        inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048).to(self.model.device)
 
-        with torch.no_grad():
+        with torch.no_grad(), torch.cuda.amp.autocast():
             outputs = self.model.generate(
                 **inputs,
                 max_new_tokens=MAX_NEW_TOKENS,

@@ -1,12 +1,25 @@
 # Campus Hiring NLP Analytics System (v2)
 
-> Production-quality LLM-powered semantic extraction from university placement emails, with deduplication, validation audit trail, and an interactive Streamlit dashboard.
+> Production-quality LLM-powered semantic extraction from university placement emails, with deduplication, validation audit trail, and an interactive dashboard.
 
-## Current State
+## 🔗 Live Dashboard
 
-- **497 emails** fetched from `placement_officer@kletech.ac.in` and stored in `data/campus_hiring.db`
-- **LLM extraction not yet run** — this is the next step on the CUDA device
-- The LLM itself classifies each email as hiring/non-hiring (no hard-coded rules)
+**[View Interactive Dashboard](https://amish-03.github.io/Campus_Hiring_Dashboard/)** — deployed via GitHub Pages
+
+## Pipeline Results
+
+| Metric | Value |
+|:---|:---|
+| Total emails processed | 497 |
+| Hiring emails classified | 475 |
+| Unique campus drives | **129** |
+| Unique companies | **102** |
+| Average CTC | **8.5 LPA** |
+| Median CTC | **6.5 LPA** |
+| Highest CTC | **33.0 LPA** |
+| Average CGPA cutoff | **7.2** |
+| Total selections | **3,023** |
+| Audit corrections | 123 |
 
 ## Architecture
 
@@ -17,7 +30,8 @@ Gmail API → SQLite (emails)
          → SQLite (structured_hiring_data)
          → Deduplicator (group by company+role)
          → SQLite (drives)
-         → Streamlit Dashboard
+         → Streamlit Dashboard (local)
+         → Static HTML Dashboard (GitHub Pages)
 ```
 
 ## Setup on CUDA Device
@@ -33,6 +47,7 @@ Gmail API → SQLite (emails)
 git clone https://github.com/Amish-03/Campus_Hiring_Dashboard.git
 cd Campus_Hiring_Dashboard
 pip install -r requirements.txt
+pip install sentencepiece hf_xet
 ```
 
 ### Step 2: Run Full Pipeline
@@ -44,15 +59,26 @@ python -m src.main --extract-only
 ```
 
 This runs **3 stages** automatically:
-1. **LLM Classify + Extract** → ALL 497 emails sent to Mistral-7B, which decides hiring/non-hiring and extracts data in one pass (~15-20 min)
+1. **LLM Classify + Extract** → ALL 497 emails sent to Mistral-7B, which decides hiring/non-hiring and extracts data in one pass (~15 min on RTX 3060)
 2. **Validate** → CTC cap, CGPA range, date normalization, branch standardization
 3. **Deduplicate** → merges multiple emails per company into one drive record
 
-### Step 3: Launch Dashboard
+### Step 3: Launch Dashboard (Local)
 
 ```bash
-streamlit run src/dashboard/dashboard.py
+python -m streamlit run src/dashboard/dashboard.py
 ```
+
+### Step 4: Deploy to GitHub Pages
+
+The static dashboard is already built in the `docs/` folder. To deploy:
+
+1. Go to **Settings** → **Pages** in your GitHub repository
+2. Under **Source**, select **Deploy from a branch**
+3. Set the branch to `main` and folder to `/docs`
+4. Click **Save**
+
+The dashboard will be live at `https://<username>.github.io/Campus_Hiring_Dashboard/`
 
 ## CLI Reference
 
@@ -64,7 +90,7 @@ streamlit run src/dashboard/dashboard.py
 | `python -m src.main --no-fetch` | Skip Gmail fetch |
 | `python -m src.main --sample-eval` | Generate ground truth template (20 emails) |
 | `python -m src.main --evaluate` | Run evaluation against annotated ground truth |
-| `streamlit run src/dashboard/dashboard.py` | Launch dashboard |
+| `python -m streamlit run src/dashboard/dashboard.py` | Launch Streamlit dashboard |
 
 ## Project Structure
 
@@ -72,6 +98,9 @@ streamlit run src/dashboard/dashboard.py
 campus_hiring_nlp/
 ├── data/
 │   └── campus_hiring.db              # 497 emails + 6 tables
+├── docs/
+│   ├── index.html                     # Static dashboard (GitHub Pages)
+│   └── data.json                      # Exported drive data
 ├── src/
 │   ├── main.py                        # 4-stage pipeline orchestrator
 │   ├── models.py                      # 5 dataclasses (Email, Hiring, Drive, Audit)
@@ -114,7 +143,7 @@ campus_hiring_nlp/
 | **Drive Table** | One row per drive, searchable, sortable |
 | **Charts** | Hiring by month, CTC histogram, CGPA histogram, Top 10 CTC, Role pie, Branch bar, CGPA vs CTC scatter |
 | **Export** | CSV download button |
-| **Audit** | Expandable validation audit log |
+| **Audit** | Expandable validation audit log (Streamlit only) |
 
 ## Evaluation Framework
 
