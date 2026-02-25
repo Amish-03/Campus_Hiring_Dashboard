@@ -1,0 +1,19 @@
+# Core Gmail API
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+
+# LLM Inference
+torch
+transformers
+accelerate
+bitsandbytes
+
+# Dashboard
+streamlit
+plotly
+pandas
+
+# Utilities
+tqdm
+python-dateutil
